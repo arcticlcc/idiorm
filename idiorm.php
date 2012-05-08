@@ -153,7 +153,7 @@
          * will be the only configuration required to use Idiorm.
          */
         public static function configure($key, $value=null) {
-            // Shortcut: If only one argument is passed, 
+            // Shortcut: If only one argument is passed,
             // assume it's a connection string
             if (is_null($value)) {
                 $value = $key;
@@ -216,16 +216,17 @@
          * names, column names etc) by looking at the driver being used by PDO.
          */
         protected static function _detect_identifier_quote_character() {
-            switch(self::$_db->getAttribute(PDO::ATTR_DRIVER_NAME)) {
-                case 'pgsql':
-                case 'sqlsrv':
-                case 'dblib':
-                case 'mssql':
-                case 'sybase':
+            //switch(self::$_db->getAttribute(PDO::ATTR_DRIVER_NAME)*/) {
+            switch(self::$_db->getDriver()->getName()) { //use dbal driver method
+                case 'pdo_pgsql':
+                case 'pdo_sqlsrv':
+                case 'pdo_dblib':
+                case 'pdo_mssql':
+                case 'pdo_sybase':
                     return '"';
-                case 'mysql':
-                case 'sqlite':
-                case 'sqlite2':
+                case 'pdo_mysql':
+                case 'pdo_sqlite':
+                case 'pdo_sqlite2':
                 default:
                     return '`';
             }
@@ -1010,7 +1011,8 @@
             if (isset(self::$_config['id_column_overrides'][$this->_table_name])) {
                 return self::$_config['id_column_overrides'][$this->_table_name];
             } else {
-                return self::$_config['id_column'];
+                /****EDIT assume pk is {tablename}id *****/
+                return $this->_table_name . self::$_config['id_column'];
             }
         }
 
@@ -1058,15 +1060,34 @@
                 $query = $this->_build_insert();
             }
 
+            //return the id for the new record, if Postgres(requires v8.2 or higher)
+            switch(self::$_db->getDriver()->getName()) {
+                case 'pdo_pgsql':
+                    $query .= 'RETURNING ' . $this->_get_id_column_name();
+            }
+
             self::_log_query($query, $values);
             $statement = self::$_db->prepare($query);
-            $success = $statement->execute($values);
+
+            //need to loop here to properly handle boolean values via PDO type
+            foreach ($values as $k => $v)  {
+                $statement->bindValue($k+1, $v, $this->getPDOConstantType($v));
+            }
+            $success = $statement->execute();
 
             // If we've just inserted a new record, set the ID of this object
             if ($this->_is_new) {
                 $this->_is_new = false;
                 if (is_null($this->id())) {
-                    $this->_data[$this->_get_id_column_name()] = self::$_db->lastInsertId();
+                //lastinsertid will not work for postgres, we're using the RETURNING clause instead
+                    switch(self::$_db->getDriver()->getName()) {
+                        case 'pdo_pgsql':
+                            $result = $statement->fetchColumn();
+                            $this->_data[$this->_get_id_column_name()] = $result;
+                            break;
+                        default:
+                            $this->_data[$this->_get_id_column_name()] = self::$_db->lastInsertId();
+                    }
                 }
             }
 
@@ -1124,6 +1145,20 @@
             return $statement->execute($params);
         }
 
+        /**
+         * get the PDO type of the passed variable value
+         */
+        public function getPDOConstantType( $var ) {
+            if( is_int( $var ) )
+                return \PDO::PARAM_INT;
+            if( is_bool( $var ) )
+                return \PDO::PARAM_BOOL;
+            if( is_null( $var ) )
+                return \PDO::PARAM_NULL;
+            //Default
+            return \PDO::PARAM_STR;
+        }
+
         // --------------------- //
         // --- MAGIC METHODS --- //
         // --------------------- //
@@ -1139,4 +1174,3 @@
             return isset($this->_data[$key]);
         }
     }
-
